@@ -1,0 +1,50 @@
+# Baut die App bei jedem Push und jedem Pull Request,
+# führt die Unit-Tests aus und stellt die Debug-APK zum Download bereit.
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v5
+
+      - name: JDK 21 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Gradle einrichten (mit Cache)
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Unit-Tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Debug-APK bauen
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Testberichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Debug-APK hochladen
+        uses: actions/upload-artifact@v5
+        with:
+          name: comfycouch-debug-apk
+          path: app/build/outputs/apk/debug/*.apk

@@ -19,6 +19,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Eigene Paket-ID, damit die Debug-Version neben der installierten
+            // ComfyChair-App (F-Droid/GitHub-Release) laufen kann.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -100,6 +106,9 @@ dependencies {
     implementation(libs.androidx.security.crypto)
 
     testImplementation(libs.junit)
+    // Echte org.json-Implementierung für JVM-Unit-Tests
+    // (die Android-Version ist in Unit-Tests nur ein leerer Stub)
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
