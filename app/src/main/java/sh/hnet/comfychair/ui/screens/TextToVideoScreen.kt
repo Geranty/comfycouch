@@ -88,7 +88,7 @@ import sh.hnet.comfychair.viewmodel.ContentType
 import sh.hnet.comfychair.viewmodel.GenerationViewModel
 import sh.hnet.comfychair.viewmodel.PromptPresetEvent
 import sh.hnet.comfychair.viewmodel.PromptPresetViewModel
-import sh.hnet.comfychair.viewmodel.TextToVideoEvent
+import sh.hnet.comfychair.viewmodel.VideoEvent
 import sh.hnet.comfychair.viewmodel.TextToVideoViewModel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
@@ -211,10 +211,10 @@ fun TextToVideoScreen(
     LaunchedEffect(Unit) {
         textToVideoViewModel.events.collect { event ->
             when (event) {
-                is TextToVideoEvent.ShowToast -> {
+                is VideoEvent.ShowToast -> {
                     Toast.makeText(context, context.getString(event.messageResId), Toast.LENGTH_SHORT).show()
                 }
-                is TextToVideoEvent.ShowToastMessage -> {
+                is VideoEvent.ShowToastMessage -> {
                     Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                 }
             }
