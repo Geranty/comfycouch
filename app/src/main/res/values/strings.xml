@@ -69,8 +69,8 @@
     <string name="error_invalid_hostname">Invalid hostname or IP address</string>
 
     <!-- SSL certificate warnings -->
-    <string name="warning_self_signed_cert">Cannot validate the certificate, connecting anyway</string>
-    <string name="warning_unknown_ca">Unknown certificate issuer, connecting anyway</string>
+    <string name="warning_self_signed_cert">Using confirmed self-signed certificate</string>
+    <string name="warning_unknown_ca">Using confirmed certificate from unknown issuer</string>
 
     <!-- Query screen strings -->
     <string name="hint_prompt">Prompt</string>
@@ -650,4 +650,21 @@
 
     <!-- Metadata actions -->
     <string name="metadata_save_prompt">Save prompt to library</string>
+    <!-- Certificate trust (trust on first use) -->
+    <string name="error_untrusted_certificate">The server certificate is not trusted yet.</string>
+    <string name="error_https_downgrade_blocked">HTTPS connection failed (%1$s). This server previously used HTTPS, so the app will not fall back to unencrypted HTTP and send your credentials in plain text.</string>
+    <string name="warning_hostname_mismatch">Using confirmed certificate issued for a different name</string>
+    <string name="title_certificate_untrusted">Trust this certificate?</string>
+    <string name="msg_certificate_untrusted">The certificate of %1$s could not be verified automatically. Only trust it if the fingerprint below matches the certificate of your own server.</string>
+    <string name="title_certificate_changed">Certificate changed</string>
+    <string name="msg_certificate_changed">The server certificate has changed. Return to the login screen to review it.</string>
+    <string name="msg_certificate_changed_detail">The certificate of %1$s is different from the one you confirmed before. This is expected after a certificate renewal, but can also mean someone is intercepting the connection. Compare the fingerprint before trusting it.</string>
+    <string name="cert_reason_self_signed">Reason: the certificate is self-signed.</string>
+    <string name="cert_reason_unknown_ca">Reason: the certificate was issued by an authority this device does not know (e.g. your own CA).</string>
+    <string name="cert_reason_hostname_mismatch">Reason: the certificate is valid but issued for a different name than the address you entered.</string>
+    <string name="cert_label_fingerprint">SHA-256 fingerprint</string>
+    <string name="cert_label_subject">Issued to</string>
+    <string name="cert_label_issuer">Issued by</string>
+    <string name="cert_label_validity">Valid</string>
+    <string name="button_trust_certificate">Trust</string>
 </resources>

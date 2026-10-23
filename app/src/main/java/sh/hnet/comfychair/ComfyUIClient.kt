@@ -15,11 +15,16 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import sh.hnet.comfychair.connection.ConnectionFailure
 import sh.hnet.comfychair.model.AuthCredentials
+import sh.hnet.comfychair.security.CertificateIssue
+import sh.hnet.comfychair.security.CertificatePinStore
+import sh.hnet.comfychair.security.ServerTrust
+import sh.hnet.comfychair.security.UntrustedCertificate
 import sh.hnet.comfychair.util.DebugLogger
 import sh.hnet.comfychair.util.Obfuscator
 import sh.hnet.comfychair.util.ProgressTrackingRequestBody
 import sh.hnet.comfychair.util.ProgressTrackingResponseBody
 import java.io.IOException
+import javax.net.ssl.SSLException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -58,8 +63,14 @@ class ComfyUIClient(
     // Auth interceptor for adding auth headers and detecting session expiry
     private val authInterceptor = AuthInterceptor(credentials, hostname)
 
+    // Bestätigte Zertifikate und "war schon mal HTTPS" pro Server
+    private val pinStore: CertificatePinStore? = context?.let { CertificatePinStore(it) }
+
+    // Zertifikatsprüfung für diesen Server (eigene Instanz pro Client)
+    private val serverTrust = ServerTrust(pinnedFingerprint = { pinStore?.getPin(hostname, port) })
+
     // OkHttpClient for HTTP requests - short timeouts are fine
-    private val httpClient = SelfSignedCertHelper.configureToAcceptSelfSigned(
+    private val httpClient = serverTrust.configure(
         OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .connectTimeout(10, TimeUnit.SECONDS)  // Max time to establish connection
@@ -70,7 +81,7 @@ class ComfyUIClient(
     // Separate OkHttpClient for WebSocket connections
     // WebSockets need longer timeouts since data may not arrive for extended periods
     // pingInterval keeps the connection alive during long operations
-    private val webSocketClient = SelfSignedCertHelper.configureToAcceptSelfSigned(
+    private val webSocketClient = serverTrust.configure(
         OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -81,7 +92,7 @@ class ComfyUIClient(
 
     // Client for large transfers (uploads/downloads) - timeouts disabled, stall detection handles them
     // This allows slow but progressing transfers to complete while detecting truly stalled connections
-    private val transferClient = SelfSignedCertHelper.configureToAcceptSelfSigned(
+    private val transferClient = serverTrust.configure(
         OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
             .connectTimeout(10, TimeUnit.SECONDS)
@@ -162,18 +173,62 @@ class ComfyUIClient(
      * Test connection to the ComfyUI server
      * Tries HTTPS first, then falls back to HTTP if HTTPS fails
      *
+     * Kein Rückfall auf HTTP, wenn
+     * - das HTTPS-Zertifikat abgelehnt wurde (dann: [ConnectionFailure.UNTRUSTED_CERTIFICATE],
+     *   Details über [getUntrustedCertificate]), oder
+     * - der Server früher schon per HTTPS lief und Zugangsdaten gesetzt sind
+     *   (sonst könnte ein Angreifer HTTPS blockieren und die Zugangsdaten im Klartext abgreifen).
+     *
      * @param callback Called with the result:
      *                 - success: true if connected, false if failed
      *                 - errorMessage: error message if failed, null if success
-     *                 - certIssue: the type of certificate issue detected (NONE, SELF_SIGNED, UNKNOWN_CA)
-     *                 - failureType: the type of failure (NONE, AUTHENTICATION, NETWORK, INVALID_SERVER)
+     *                 - certIssue: the type of certificate issue detected
+     *                 - failureType: the type of failure
      */
     fun testConnection(callback: (success: Boolean, errorMessage: String?, certIssue: CertificateIssue, failureType: ConnectionFailure) -> Unit) {
         DebugLogger.i(TAG, "Testing connection to ${Obfuscator.hostname(hostname)}")
-        // Reset the certificate issue detection
-        SelfSignedCertHelper.reset()
+        serverTrust.reset()
         // Try HTTPS first (more secure)
         tryConnection("https", callback)
+    }
+
+    /** Das zuletzt abgelehnte Zertifikat, damit die Oberfläche den Nutzer fragen kann. */
+    fun getUntrustedCertificate(): UntrustedCertificate? = serverTrust.lastUntrusted
+
+    /** Merkt sich ein vom Nutzer bestätigtes Zertifikat für diesen Server. */
+    fun trustCertificate(fingerprint: String) {
+        pinStore?.setPin(hostname, port, fingerprint)
+    }
+
+    private fun isHttpDowngradeBlocked(): Boolean =
+        pinStore?.isHttpsKnown(hostname, port) == true &&
+            authInterceptor.getCredentials() !is AuthCredentials.None
+
+    /**
+     * HTTPS hat aus einem anderen Grund als dem Zertifikat nicht geklappt:
+     * HTTP versuchen, außer das wäre ein gefährlicher Downgrade.
+     */
+    private fun fallBackToHttp(
+        reason: String,
+        callback: (success: Boolean, errorMessage: String?, certIssue: CertificateIssue, failureType: ConnectionFailure) -> Unit
+    ) {
+        if (isHttpDowngradeBlocked()) {
+            DebugLogger.w(TAG, "HTTPS failed ($reason), HTTP fallback blocked (server known to use HTTPS)")
+            callback(
+                false,
+                context?.getString(R.string.error_https_downgrade_blocked, reason)
+                    ?: "HTTPS failed ($reason). Not falling back to unencrypted HTTP.",
+                CertificateIssue.NONE,
+                ConnectionFailure.NETWORK
+            )
+        } else {
+            tryConnection("http", callback)
+        }
+    }
+
+    private fun markProtocolWorking(protocol: String) {
+        workingProtocol = protocol
+        if (protocol == "https") pinStore?.markHttpsKnown(hostname, port)
     }
 
     /**
@@ -200,10 +255,19 @@ class ComfyUIClient(
         // We use enqueue instead of execute to avoid blocking the UI thread
         httpClient.newCall(request).enqueue(object : okhttp3.Callback {
             override fun onFailure(call: okhttp3.Call, e: IOException) {
-                // Connection failed with this protocol
-                if (protocol == "https") {
-                    // HTTPS failed, try HTTP as fallback
-                    tryConnection("http", callback)
+                val untrusted = serverTrust.lastUntrusted
+                if (protocol == "https" && e is SSLException && untrusted != null) {
+                    // Server spricht HTTPS, aber das Zertifikat ist (noch) nicht bestätigt
+                    DebugLogger.w(TAG, "Untrusted certificate (${untrusted.issue})")
+                    callback(
+                        false,
+                        context?.getString(R.string.error_untrusted_certificate)
+                            ?: "The server certificate is not trusted.",
+                        untrusted.issue,
+                        ConnectionFailure.UNTRUSTED_CERTIFICATE
+                    )
+                } else if (protocol == "https") {
+                    fallBackToHttp(e.message ?: e.javaClass.simpleName, callback)
                 } else {
                     // HTTP also failed - both protocols don't work
                     callback(false, "Connection failed: ${e.message}", CertificateIssue.NONE, ConnectionFailure.NETWORK)
@@ -221,15 +285,15 @@ class ComfyUIClient(
                             val system = json.optJSONObject("system")
                             if (system != null && system.has("os")) {
                                 // Valid ComfyUI server
-                                workingProtocol = protocol
-                                val certIssue = SelfSignedCertHelper.certificateIssue
+                                markProtocolWorking(protocol)
+                                val certIssue = if (protocol == "https") serverTrust.lastIssue else CertificateIssue.NONE
                                 DebugLogger.i(TAG, "Connection successful (protocol: $protocol)")
                                 callback(true, null, certIssue, ConnectionFailure.NONE)
                             } else {
                                 // Response doesn't match ComfyUI format
                                 DebugLogger.w(TAG, "Invalid response: not a ComfyUI server")
                                 if (protocol == "https") {
-                                    tryConnection("http", callback)
+                                    fallBackToHttp("not a ComfyUI server", callback)
                                 } else {
                                     callback(false, context?.getString(R.string.error_not_comfyui_server)
                                         ?: "Not a ComfyUI server", CertificateIssue.NONE, ConnectionFailure.INVALID_SERVER)
@@ -239,7 +303,7 @@ class ComfyUIClient(
                             // Response is not valid JSON - not a ComfyUI server
                             DebugLogger.w(TAG, "Invalid response: ${e.message}")
                             if (protocol == "https") {
-                                tryConnection("http", callback)
+                                fallBackToHttp("invalid response", callback)
                             } else {
                                 callback(false, context?.getString(R.string.error_invalid_server_response)
                                     ?: "Invalid server response", CertificateIssue.NONE, ConnectionFailure.INVALID_SERVER)
@@ -252,18 +316,18 @@ class ComfyUIClient(
                         // Check for authentication errors - these should not fallback to HTTP
                         // since authentication is protocol-independent
                         if (code == 401 || code == 403) {
-                            workingProtocol = protocol  // Protocol works, auth doesn't
+                            markProtocolWorking(protocol)  // Protocol works, auth doesn't
                             DebugLogger.w(TAG, "Authentication failed (protocol: $protocol, code: $code)")
                             callback(
                                 false,
                                 context?.getString(R.string.error_auth_unauthorized)
                                     ?: "Authentication failed. Please check your credentials.",
-                                SelfSignedCertHelper.certificateIssue,
+                                if (protocol == "https") serverTrust.lastIssue else CertificateIssue.NONE,
                                 ConnectionFailure.AUTHENTICATION
                             )
                         } else if (protocol == "https") {
                             // Try HTTP as fallback for other errors
-                            tryConnection("http", callback)
+                            fallBackToHttp("HTTP $code", callback)
                         } else {
                             // Both protocols failed
                             DebugLogger.w(TAG, "Connection failed: server error $code")

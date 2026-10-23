@@ -96,8 +96,8 @@
     <string name="error_invalid_hostname">Ungültiger Hostname oder IP-Adresse</string>
 
     <!-- SSL certificate warnings -->
-    <string name="warning_self_signed_cert">Zertifikat kann nicht überprüft werden, verbinde trotzdem</string>
-    <string name="warning_unknown_ca">Unbekannter Zertifikatsaussteller, verbinde trotzdem</string>
+    <string name="warning_self_signed_cert">Bestätigtes selbstsigniertes Zertifikat wird verwendet</string>
+    <string name="warning_unknown_ca">Bestätigtes Zertifikat eines unbekannten Ausstellers wird verwendet</string>
 
     <!-- Query screen strings -->
     <string name="hint_prompt">Prompt</string>
@@ -619,4 +619,21 @@
 
     <!-- Metadata actions -->
     <string name="metadata_save_prompt">Prompt in Bibliothek speichern</string>
+    <!-- Zertifikat bestätigen (Trust on first use) -->
+    <string name="error_untrusted_certificate">Dem Server-Zertifikat wird noch nicht vertraut.</string>
+    <string name="error_https_downgrade_blocked">HTTPS-Verbindung fehlgeschlagen (%1$s). Dieser Server lief bisher per HTTPS, daher weicht die App nicht auf unverschlüsseltes HTTP aus und sendet Ihre Zugangsdaten nicht im Klartext.</string>
+    <string name="warning_hostname_mismatch">Bestätigtes Zertifikat für einen anderen Namen wird verwendet</string>
+    <string name="title_certificate_untrusted">Diesem Zertifikat vertrauen?</string>
+    <string name="msg_certificate_untrusted">Das Zertifikat von %1$s konnte nicht automatisch geprüft werden. Vertrauen Sie ihm nur, wenn der Fingerabdruck unten mit dem Zertifikat Ihres eigenen Servers übereinstimmt.</string>
+    <string name="title_certificate_changed">Zertifikat geändert</string>
+    <string name="msg_certificate_changed">Das Server-Zertifikat hat sich geändert. Kehren Sie zum Login zurück, um es zu prüfen.</string>
+    <string name="msg_certificate_changed_detail">Das Zertifikat von %1$s unterscheidet sich von dem, das Sie zuvor bestätigt haben. Das ist nach einer Zertifikatserneuerung normal, kann aber auch bedeuten, dass jemand die Verbindung abfängt. Vergleichen Sie den Fingerabdruck, bevor Sie vertrauen.</string>
+    <string name="cert_reason_self_signed">Grund: Das Zertifikat ist selbstsigniert.</string>
+    <string name="cert_reason_unknown_ca">Grund: Das Zertifikat stammt von einer Stelle, die dieses Gerät nicht kennt (z. B. Ihre eigene CA).</string>
+    <string name="cert_reason_hostname_mismatch">Grund: Das Zertifikat ist gültig, aber für einen anderen Namen als die eingegebene Adresse ausgestellt.</string>
+    <string name="cert_label_fingerprint">SHA-256-Fingerabdruck</string>
+    <string name="cert_label_subject">Ausgestellt für</string>
+    <string name="cert_label_issuer">Ausgestellt von</string>
+    <string name="cert_label_validity">Gültig</string>
+    <string name="button_trust_certificate">Vertrauen</string>
 </resources>
