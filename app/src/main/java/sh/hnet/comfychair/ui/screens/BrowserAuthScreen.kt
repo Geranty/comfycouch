@@ -1,6 +1,7 @@
 package sh.hnet.comfychair.ui.screens
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.net.Uri
 import android.net.http.SslError
 import android.webkit.CookieManager
@@ -20,12 +21,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import sh.hnet.comfychair.R
+import sh.hnet.comfychair.security.CertificateIssue
 import sh.hnet.comfychair.security.CertificatePinStore
 import sh.hnet.comfychair.security.ServerTrust
+import sh.hnet.comfychair.security.UntrustedCertificate
+import sh.hnet.comfychair.ui.components.CertificateTrustDialog
 
 /**
  * Full-screen WebView for browser-based SSO authentication.
@@ -35,8 +43,10 @@ import sh.hnet.comfychair.security.ServerTrust
  * When the user taps "Done", the session cookies for [serverUrl] are captured
  * and returned via [onAuthComplete].
  *
- * SSL errors are treated the same as in the OkHttp configuration — they are
- * accepted so that self-signed certificate servers work correctly.
+ * SSL errors are treated the same as in the OkHttp configuration: only
+ * certificates the user has confirmed (by SHA-256 fingerprint) are accepted.
+ * For an unknown certificate the same confirmation dialog is shown here, e.g.
+ * when the SSO login runs on a different host than ComfyUI.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +56,25 @@ fun BrowserAuthScreen(
     onAuthComplete: (cookies: String) -> Unit,
     onCancel: () -> Unit
 ) {
+    // Zertifikat, das gerade im WebView zur Bestätigung ansteht
+    var pendingSsl by remember { mutableStateOf<PendingSslDecision?>(null) }
+
+    pendingSsl?.let { pending ->
+        CertificateTrustDialog(
+            certificate = pending.certificate,
+            serverAddress = "${pending.host}:${pending.port}",
+            onTrust = {
+                CertificatePinStore(pending.context).setPin(pending.host, pending.port, pending.certificate.fingerprint)
+                pendingSsl = null
+                pending.handler.proceed()
+            },
+            onDismiss = {
+                pendingSsl = null
+                pending.handler.cancel()
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -104,12 +133,36 @@ fun BrowserAuthScreen(
                             val uri = Uri.parse(error.url)
                             val host = uri.host
                             val port = if (uri.port != -1) uri.port else 443
-                            val pinned = host?.let { CertificatePinStore(view.context).getPin(it, port) }
-                            if (certificate != null && pinned != null &&
-                                pinned.equals(ServerTrust.fingerprint(certificate), ignoreCase = true)
-                            ) {
+                            if (certificate == null || host == null) {
+                                handler.cancel()
+                                return
+                            }
+                            val fingerprint = ServerTrust.fingerprint(certificate)
+                            val pinned = CertificatePinStore(view.context).getPin(host, port)
+                            if (pinned != null && pinned.equals(fingerprint, ignoreCase = true)) {
                                 handler.proceed()
+                            } else if (pendingSsl == null) {
+                                // Unbekanntes oder geändertes Zertifikat: Nutzer fragen
+                                pendingSsl = PendingSslDecision(
+                                    handler = handler,
+                                    context = view.context.applicationContext,
+                                    host = host,
+                                    port = port,
+                                    certificate = UntrustedCertificate(
+                                        fingerprint = fingerprint,
+                                        issue = when {
+                                            error.primaryError == SslError.SSL_IDMISMATCH -> CertificateIssue.HOSTNAME_MISMATCH
+                                            else -> ServerTrust.classify(certificate)
+                                        },
+                                        subject = certificate.subjectX500Principal.name,
+                                        issuer = certificate.issuerX500Principal.name,
+                                        notBefore = certificate.notBefore,
+                                        notAfter = certificate.notAfter,
+                                        previousFingerprint = pinned
+                                    )
+                                )
                             } else {
+                                // Es wartet schon eine Frage; diese Anfrage abbrechen
                                 handler.cancel()
                             }
                         }
@@ -124,3 +177,12 @@ fun BrowserAuthScreen(
         )
     }
 }
+
+/** Eine offene Zertifikatsfrage aus dem WebView. */
+private class PendingSslDecision(
+    val handler: SslErrorHandler,
+    val context: Context,
+    val host: String,
+    val port: Int,
+    val certificate: UntrustedCertificate
+)
