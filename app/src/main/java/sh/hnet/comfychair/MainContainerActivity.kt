@@ -18,7 +18,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import kotlinx.coroutines.runBlocking
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import sh.hnet.comfychair.cache.MediaCache
 import sh.hnet.comfychair.cache.MediaStateHolder
 import sh.hnet.comfychair.connection.ConnectionManager
@@ -30,6 +33,7 @@ import sh.hnet.comfychair.storage.CredentialStorage
 import sh.hnet.comfychair.ui.components.ConnectionAlertDialog
 import sh.hnet.comfychair.ui.navigation.MainNavHost
 import sh.hnet.comfychair.ui.theme.ComfyChairTheme
+import sh.hnet.comfychair.util.ApplicationScope
 import sh.hnet.comfychair.util.DebugLogger
 import sh.hnet.comfychair.util.ServerUrlUtils
 import sh.hnet.comfychair.viewmodel.GenerationViewModel
@@ -132,24 +136,36 @@ class MainContainerActivity : ComponentActivity() {
         // Set caching mode based on user preference
         val isMemoryFirst = AppSettings.isMemoryFirstCache(this)
         DebugLogger.d("MainContainer", "caching mode: ${if (isMemoryFirst) "memory-first" else "disk-first"}")
-        MediaStateHolder.setMemoryFirstMode(isMemoryFirst, applicationContext)
         MediaCache.setMemoryFirstMode(isMemoryFirst)
 
         // Initialize MediaCache with context for image/video fetching
         MediaCache.ensureInitialized(applicationContext)
 
-        // Load saved media state before screens initialize
-        if (isMemoryFirst) {
-            // Memory-first: load everything from disk into memory
-            DebugLogger.d("MainContainer", "loading media from disk (memory-first mode)")
-            runBlocking {
-                MediaStateHolder.loadFromDisk(applicationContext)
+        // Gespeicherte Medien laden, bevor die Screens aufgebaut werden.
+        // Früher per runBlocking auf dem Main-Thread: Bei großen Videos fror die App
+        // dabei ein. Jetzt läuft das Laden im Hintergrund und die Oberfläche wird
+        // erst danach gesetzt, damit die Screens den geladenen Zustand sehen.
+        lifecycleScope.launch {
+            val switchedMode = MediaStateHolder.setMemoryFirstMode(isMemoryFirst, applicationContext)
+            if (isMemoryFirst) {
+                // Memory-first: load everything from disk into memory
+                // (beim Moduswechsel ist das schon passiert)
+                if (!switchedMode) {
+                    DebugLogger.d("MainContainer", "loading media from disk (memory-first mode)")
+                    MediaStateHolder.loadFromDisk(applicationContext)
+                }
+            } else {
+                // Disk-first: just discover video promptIds (bytes read on-demand)
+                DebugLogger.d("MainContainer", "discovering video promptIds (disk-first mode)")
+                withContext(Dispatchers.IO) {
+                    MediaStateHolder.discoverVideoPromptIds(applicationContext)
+                }
             }
-        } else {
-            // Disk-first: just discover video promptIds (bytes read on-demand)
-            DebugLogger.d("MainContainer", "discovering video promptIds (disk-first mode)")
-            MediaStateHolder.discoverVideoPromptIds(applicationContext)
+            showContent()
         }
+    }
+
+    private fun showContent() {
 
         // Determine start destination based on active generation owner
         val startDestination = when (generationViewModel.generationState.value.ownerId) {
@@ -278,8 +294,11 @@ class MainContainerActivity : ComponentActivity() {
         DebugLogger.d("MainContainer", "onStop - memoryFirst=$isMemoryFirst, cacheDisabled=$isCacheDisabled")
         if (isMemoryFirst && !isCacheDisabled) {
             DebugLogger.d("MainContainer", "onStop - persisting media to disk")
-            runBlocking {
-                MediaStateHolder.persistToDisk(applicationContext)
+            // Im Hintergrund speichern statt den Main-Thread zu blockieren. Der
+            // ApplicationScope läuft weiter, auch wenn diese Activity beendet wird.
+            val appContext = applicationContext
+            ApplicationScope.launch {
+                MediaStateHolder.persistToDisk(appContext)
             }
         }
     }

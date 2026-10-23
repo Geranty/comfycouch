@@ -9,7 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import sh.hnet.comfychair.util.DebugLogger
 import sh.hnet.comfychair.util.VideoUtils
@@ -94,30 +95,29 @@ object MediaStateHolder {
     private var currentTtvPromptId: String? = null
     private var currentItvPromptId: String? = null
 
+    // Verhindert, dass Laden und Speichern gleichzeitig laufen. Beispiel: Beim Drehen
+    // des Handys startet onStop() das Speichern und direkt danach onCreate() das Laden.
+    // Ohne Sperre könnte das Laden alte Dateien lesen, während noch geschrieben wird.
+    private val diskMutex = Mutex()
+
     /**
      * Set the caching mode.
      * @param enabled true for memory-first (default), false for disk-first
      * @param context Required for content migration when switching modes
+     * @return true, wenn der Modus gewechselt wurde (beim Wechsel zu memory-first
+     *   ist dann bereits von der Disk geladen)
      */
-    fun setMemoryFirstMode(enabled: Boolean, context: Context? = null) {
-        if (isMemoryFirstMode == enabled) return  // No change
+    suspend fun setMemoryFirstMode(enabled: Boolean, context: Context? = null): Boolean {
+        if (isMemoryFirstMode == enabled) return false  // No change
 
         DebugLogger.i(TAG, "Switching to ${if (enabled) "memory-first" else "disk-first"} mode")
         if (enabled) {
             // Switching TO memory-first: load disk content into memory
-            context?.let { ctx ->
-                runBlocking {
-                    loadFromDisk(ctx)
-                }
-                // Disk files remain as backup - don't clear them
-            }
+            // Disk files remain as backup - don't clear them
+            context?.let { loadFromDisk(it) }
         } else {
             // Switching TO disk-first: persist memory content to disk first
-            context?.let { ctx ->
-                runBlocking {
-                    persistToDisk(ctx)
-                }
-            }
+            context?.let { persistToDisk(it) }
             // Now safe to clear in-memory caches
             bitmaps.clear()
             videoBytes.clear()
@@ -126,6 +126,7 @@ object MediaStateHolder {
         }
 
         isMemoryFirstMode = enabled
+        return true
     }
 
     /**
@@ -343,11 +344,11 @@ object MediaStateHolder {
      * Persist all dirty items to disk using parallel writes for speed.
      * Called from MainContainerActivity.onStop().
      */
-    suspend fun persistToDisk(context: Context) {
+    suspend fun persistToDisk(context: Context): Unit = diskMutex.withLock {
         val serverId = currentServerId
         if (serverId == null) {
             DebugLogger.w(TAG, "persistToDisk SKIPPED - currentServerId is null! (dirty: ${dirtyBitmaps.size} bitmaps, ${dirtyVideos.size} videos)")
-            return
+            return@withLock
         }
 
         val bitmapCount = dirtyBitmaps.size
@@ -356,7 +357,7 @@ object MediaStateHolder {
 
         if (bitmapCount == 0 && videoCount == 0) {
             DebugLogger.d(TAG, "persistToDisk: nothing to persist")
-            return
+            return@withLock
         }
 
         withContext(Dispatchers.IO) {
@@ -374,7 +375,7 @@ object MediaStateHolder {
                         return@async false
                     }
                     try {
-                        context.openFileOutput(key.filename(serverId), Context.MODE_PRIVATE).use { out ->
+                        writeAtomically(File(context.filesDir, key.filename(serverId))) { out ->
                             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
                         }
                         dirtyBitmaps.remove(key)
@@ -396,7 +397,9 @@ object MediaStateHolder {
                         return@async false
                     }
                     try {
-                        File(context.filesDir, key.filename(serverId)).writeBytes(bytes)
+                        writeAtomically(File(context.filesDir, key.filename(serverId))) { out ->
+                            out.write(bytes)
+                        }
                         dirtyVideos.remove(key)
                         DebugLogger.d(TAG, "persistToDisk: ${key.baseFilename} -> OK")
                         true
@@ -424,11 +427,11 @@ object MediaStateHolder {
      * Load persisted media from disk into memory for the current server.
      * Called from MainContainerActivity.onCreate().
      */
-    suspend fun loadFromDisk(context: Context) {
+    suspend fun loadFromDisk(context: Context): Unit = diskMutex.withLock {
         val serverId = currentServerId
         if (serverId == null) {
             DebugLogger.w(TAG, "loadFromDisk SKIPPED - currentServerId is null!")
-            return
+            return@withLock
         }
 
         DebugLogger.i(TAG, "loadFromDisk START (server: ${serverId.take(8)}...)")
@@ -486,6 +489,22 @@ object MediaStateHolder {
             }
 
             DebugLogger.i(TAG, "loadFromDisk DONE (loaded: $bitmapsLoaded bitmaps, not found: $bitmapsNotFound)")
+        }
+    }
+
+    /**
+     * Schreibt erst in eine temporäre Datei und benennt sie dann um. Wird die App
+     * mitten im Schreiben beendet, bleibt so die alte Datei heil statt einer halben.
+     */
+    private inline fun writeAtomically(target: File, write: (java.io.OutputStream) -> Unit) {
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        try {
+            temp.outputStream().use { write(it) }
+            if (!temp.renameTo(target)) {
+                throw java.io.IOException("rename failed: ${temp.name}")
+            }
+        } finally {
+            temp.delete()
         }
     }
 
