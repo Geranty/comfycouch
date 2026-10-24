@@ -222,6 +222,7 @@ class ComfyUIClient(
                 ConnectionFailure.NETWORK
             )
         } else {
+            DebugLogger.d(TAG, "HTTPS failed ($reason), trying HTTP")
             tryConnection("http", callback)
         }
     }
