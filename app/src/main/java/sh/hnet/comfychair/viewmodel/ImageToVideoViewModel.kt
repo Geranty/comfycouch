@@ -9,7 +9,6 @@ import kotlin.coroutines.suspendCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import sh.hnet.comfychair.R
 import sh.hnet.comfychair.WorkflowManager
@@ -322,21 +321,29 @@ class ImageToVideoViewModel : BaseGenerationViewModel<ImageToVideoUiState, Image
         // Models are now loaded automatically via ConnectionManager
     }
 
+    // Läuft gerade ein Wiederherstellen? Verhindert doppelte Ladevorgänge.
+    private var videoRestoreJob: kotlinx.coroutines.Job? = null
+
     /**
      * Load the last generated video from cache.
      * This restores the video preview when the screen is recreated.
-     * Uses runBlocking to ensure synchronous restoration like TTI/ITI.
+     *
+     * Läuft im Hintergrund: Im memory-first-Modus wird dafür das ganze Video in eine
+     * temporäre Datei geschrieben. Früher passierte das blockierend auf dem
+     * Main-Thread und ließ die Oberfläche hängen.
      */
     private fun loadLastGeneratedVideo() {
         val context = applicationContext ?: return
         val promptId = MediaStateHolder.getCurrentItvPromptId() ?: return
+        if (videoRestoreJob?.isActive == true) return
 
         val key = MediaStateHolder.MediaKey.ItvVideo(promptId)
-        if (MediaStateHolder.hasVideoBytes(key, context)) {
-            val uri = runBlocking {
-                MediaStateHolder.getVideoUri(context, key)
-            }
-            if (uri != null) {
+        videoRestoreJob = viewModelScope.launch {
+            val available = withContext(Dispatchers.IO) { MediaStateHolder.hasVideoBytes(key, context) }
+            if (!available) return@launch
+            val uri = MediaStateHolder.getVideoUri(context, key) ?: return@launch
+            // Nicht überschreiben, falls inzwischen schon ein (neueres) Video angezeigt wird
+            if (_uiState.value.currentVideoUri == null) {
                 _uiState.value = _uiState.value.copy(currentVideoUri = uri)
             }
         }
