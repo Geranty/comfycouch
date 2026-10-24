@@ -14,5 +14,7 @@ enum class ConnectionFailure {
     /** Server is not a valid ComfyUI server */
     INVALID_SERVER,
     /** Transfer stalled - no data transferred for extended period */
-    STALLED
+    STALLED,
+    /** Server-Zertifikat nicht bestätigt oder geändert - Nutzer muss es prüfen */
+    UNTRUSTED_CERTIFICATE
 }

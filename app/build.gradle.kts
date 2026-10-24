@@ -109,6 +109,9 @@ dependencies {
     // Echte org.json-Implementierung für JVM-Unit-Tests
     // (die Android-Version ist in Unit-Tests nur ein leerer Stub)
     testImplementation(libs.json)
+    // Test-Zertifikate und ein lokaler HTTPS-Testserver für die TLS-Tests
+    testImplementation(libs.test.okhttp.tls)
+    testImplementation(libs.test.mockwebserver)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }

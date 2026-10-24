@@ -44,17 +44,21 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import sh.hnet.comfychair.BrowserAuthActivity
-import sh.hnet.comfychair.CertificateIssue
 import sh.hnet.comfychair.ComfyUIClient
 import sh.hnet.comfychair.MainContainerActivity
 import sh.hnet.comfychair.R
+import sh.hnet.comfychair.connection.ConnectionFailure
 import sh.hnet.comfychair.connection.ConnectionManager
 import sh.hnet.comfychair.model.AuthCredentials
 import sh.hnet.comfychair.model.AuthType
 import sh.hnet.comfychair.model.Server
+import sh.hnet.comfychair.security.CertificateIssue
+import sh.hnet.comfychair.security.CertificatePinStore
+import sh.hnet.comfychair.security.UntrustedCertificate
 import sh.hnet.comfychair.storage.AppSettings
 import sh.hnet.comfychair.storage.CredentialStorage
 import sh.hnet.comfychair.storage.ServerStorage
+import sh.hnet.comfychair.ui.components.CertificateTrustDialog
 import sh.hnet.comfychair.ui.components.ConnectionSplitButton
 import sh.hnet.comfychair.ui.components.ServerDialog
 import sh.hnet.comfychair.ui.components.ServerDropdown
@@ -109,6 +113,8 @@ fun LoginScreen() {
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showOfflinePrompt by remember { mutableStateOf(false) }
     var offlinePromptServer by remember { mutableStateOf<Server?>(null) }
+    // Zertifikat, das der Nutzer bestätigen soll (Server + Zertifikat)
+    var pendingCertificate by remember { mutableStateOf<Pair<Server, UntrustedCertificate>?>(null) }
 
     // Browser auth state:
     // - pendingBrowserAuthServer: the server whose cookies are being captured
@@ -153,6 +159,7 @@ fun LoginScreen() {
     // String resources
     val warningSelfSigned = stringResource(R.string.warning_self_signed_cert)
     val warningUnknownCa = stringResource(R.string.warning_unknown_ca)
+    val warningHostnameMismatch = stringResource(R.string.warning_hostname_mismatch)
 
     // Connection function.
     // isRetryAfterAuth: true when called after a successful WebView auth — prevents a
@@ -189,13 +196,16 @@ fun LoginScreen() {
             comfyUIClient = client
 
             // Test connection using suspendCoroutine
+            var failureType = ConnectionFailure.NONE
             val result = suspendCoroutine { continuation ->
-                client.testConnection { success, errorMessage, certIssue, _ ->
+                client.testConnection { success, errorMessage, certIssue, failure ->
+                    failureType = failure
                     continuation.resume(Triple(success, errorMessage, certIssue))
                 }
             }
 
             val (success, errorMessage, certIssue) = result
+            val untrusted = client.getUntrustedCertificate()
 
             if (success) {
                 connectionState = ConnectionState.CONNECTED
@@ -208,6 +218,10 @@ fun LoginScreen() {
                     }
                     CertificateIssue.UNKNOWN_CA -> {
                         warningMessage = warningUnknownCa
+                        1000L
+                    }
+                    CertificateIssue.HOSTNAME_MISMATCH -> {
+                        warningMessage = warningHostnameMismatch
                         1000L
                     }
                     CertificateIssue.NONE -> 500L
@@ -233,6 +247,10 @@ fun LoginScreen() {
                 // Navigate to main activity
                 val intent = Intent(context, MainContainerActivity::class.java)
                 context.startActivity(intent)
+            } else if (failureType == ConnectionFailure.UNTRUSTED_CERTIFICATE && untrusted != null) {
+                // Zertifikat nicht bestätigt: Nutzer fragen, bei "Vertrauen" neu verbinden
+                pendingCertificate = server to untrusted
+                connectionState = ConnectionState.IDLE
             } else if (server.authType == AuthType.BROWSER && !isRetryAfterAuth) {
                 // Connection failed with browser auth and WebView hasn't been tried yet.
                 // The server may be reachable but behind an SSO that blocked the request.
@@ -427,6 +445,8 @@ fun LoginScreen() {
                     onClick = {
                         val serverToDelete = selectedServer!!
                         serverStorage.deleteServer(serverToDelete.id)
+                        // Bestätigtes Zertifikat und HTTPS-Merker ebenfalls vergessen
+                        CertificatePinStore(context).forget(serverToDelete.hostname, serverToDelete.port)
 
                         // Also delete credentials for the server
                         credentialStorage.deleteCredentials(serverToDelete.id)
@@ -452,6 +472,20 @@ fun LoginScreen() {
                     Text(stringResource(android.R.string.cancel))
                 }
             }
+        )
+    }
+
+    // Zertifikat bestätigen (Trust on first use)
+    pendingCertificate?.let { (server, certificate) ->
+        CertificateTrustDialog(
+            certificate = certificate,
+            serverAddress = "${server.hostname}:${server.port}",
+            onTrust = {
+                CertificatePinStore(context).setPin(server.hostname, server.port, certificate.fingerprint)
+                pendingCertificate = null
+                attemptConnection(server)
+            },
+            onDismiss = { pendingCertificate = null }
         )
     }
 
